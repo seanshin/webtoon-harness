@@ -135,6 +135,20 @@ cp -r webtoon-harness/.claude /path/to/your-project/
 
 ---
 
+## 🧪 검증된 렌더 운영값 (WeRU.B, 실측)
+
+70컷 풀 에피소드 제작으로 검증한 운영값입니다. 새 회차/프로젝트에서 그대로 따르면 일관성과 품질이 재현됩니다.
+
+- **화풍 선택**: 기본 `dreamshaper / illustration`(한국 웹툰 만화체). 애니 셀화 톤이 필요하면 `animagine / illustration`(단, 아래 강화 negative 필수). 모델은 art-director의 프로젝트별 선택이며 style-bible에 고정합니다.
+- **품질 프로파일**: 초안은 `draft`(빠름), 최종본만 `hq`(`steps:30, cfg:6.5, 896×1280` + 품질 토큰, 느림). prompt-smith가 잡에 주입합니다.
+- **캐릭터 일관성 = `character_id`(IP-Adapter) + 샷별 강도**: `wide`/`full` → `mode:full, strength:0.4` · `close`/`emotion` → `mode:face, strength:0.5`. **`strength ≥0.6` 금지**(모든 컷이 정면 상반신 초상으로 붕괴하고 표정이 죽음). 회차당 등장인물은 각각 깨끗한 정면 레퍼런스로 `character/create` 등록.
+- **만화 학습 모델 강화 negative(필수)**: animagine 등 만화 데이터 학습 모델은 패널 안에 **가짜 말풍선 + gibberish 글자**를 굽는다. 모든 잡 negative에 추가: `speech bubble, speech balloon, manga panel, comic book, comic panel, dialogue text, japanese text, caption box, sound effect text, manga, manhwa text`. (색편향 방지로 `purple hair, silver highlights`도.)
+- **긍정 프롬프트에 "speech bubble/말풍선" 금지**: 여백을 지시할 때조차 `for a speech-bubble overlay`처럼 "bubble"을 쓰면 모델이 **빈 말풍선 윤곽**을 그려 넣는다. 여백은 중립어(`clean low-detail empty area`)로만 지시.
+- **소품 인서트컷 교정**: 만화 모델은 고립된 소품(시계·지폐·꽃 등)에 약해 학습 편향(선반·인물·네온)으로 흐른다. `extreme close-up still-life insert, single object fills frame` + 강한 negative(`people, person, product shelves, store aisle, neon signs`)로 객체를 강제.
+- **중간 패널 미리보기**: 렌더 헬퍼는 폴링이 끝난 뒤 **일괄 다운로드**한다. 진행 중 특정 패널만 미리 보려면 `out-dir/.jobids.json`의 job_id로 `/api/image/status/{id}` 조회 후 `/api/image/view/{filename}`을 `curl -sL`로 직접 받는다.
+
+---
+
 ## 📝 라이선스
 
 [MIT](LICENSE)
