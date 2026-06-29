@@ -82,30 +82,80 @@ def repair_json_array(txt):
     return None
 
 
-def llm_beats(logline, cuts, retries=2):
-    """로컬 LLM을 두뇌로 써서 비트 배열(JSON)을 생성한다."""
-    sys_prompt = ("You are a Korean webtoon director. You output ONLY valid JSON — no prose, no markdown fences. "
-                  "Use only these character ids for 'char': \"jiho\", \"yuna\", or null.")
-    user = textwrap.dedent(f"""\
+SYS_PROMPT = ("You are a Korean webtoon director. You output ONLY valid JSON — no prose, no markdown fences. "
+              "Use only these character ids for 'char': \"jiho\", \"yuna\", or null. "
+              "EVERY non-insert cut MUST have at least one dialogue entry with a non-empty Korean 'ko'.")
+SCHEMA_DOC = textwrap.dedent("""\
+    각 원소 스키마:
+    {"shot":"wide|full|close|emotion|insert",
+      "loc":"EXT|CVS|STREET",
+      "char":"jiho|yuna|null",
+      "scene_en":"english visual description, NO text/letters/speech-bubble words",
+      "bspace":"top|bottom|tl|tr|bl|center",
+      "dialogue":[{"type":"speech|thought|narration|sfx","speaker":"이름 또는 빈칸","ko":"한글 대사"}]}
+    규칙: 인서트(소품)컷만 dialogue 비움(char=null). 그 외 모든 컷은 dialogue 최소 1줄(빈 ko 금지).
+    분위기는 차갑고 긴장. 대사는 짧고 자연스러운 구어체.""")
+
+
+def _ask_batch(logline, total, sofar, need, retries=2):
+    """다음 need개 컷을 이어서 생성. sofar=지금까지의 (idx,shot,char,ko요약) 리스트."""
+    ctx = "\n".join(f"  #{i}: [{s}] {k}" for i, s, k in sofar) or "  (아직 없음)"
+    base = textwrap.dedent(f"""\
         로그라인: "{logline}"
-        이걸 정확히 {cuts}개의 세로 스크롤 웹툰 컷으로 재구성해 JSON 배열로만 출력하라.
-        각 원소 스키마:
-        {{"shot":"wide|full|close|emotion|insert",
-          "loc":"EXT|CVS|STREET",
-          "char":"jiho|yuna|null",
-          "scene_en":"english visual description, NO text/letters/speech-bubble words",
-          "bspace":"top|bottom|tl|tr|bl|center",
-          "dialogue":[{{"type":"speech|thought|narration|sfx","speaker":"이름 또는 빈칸","ko":"한글 대사"}}]}}
-        규칙: 인서트(소품)컷은 char=null. 분위기는 차갑고 긴장. 마지막 컷은 여운/클리프행어.
+        전체 {total}컷짜리 세로 스크롤 웹툰을 만드는 중이다. 지금까지 작성된 컷:
+        {ctx}
+
+        이어서 **정확히 {need}개**의 다음 컷을 JSON 배열로만 출력하라(앞 내용과 연결, 중복 금지).
+        {SCHEMA_DOC}
+        {'이번이 마지막 묶음이다 — 마지막 컷은 여운/클리프행어로.' if need + len(sofar) >= total else ''}
         JSON 배열만 출력.""")
+    user = base
     for i in range(retries + 1):
-        txt = ssh_post("/api/generate", {"model": LLM_MODEL, "system": sys_prompt, "prompt": user})
-        beats = repair_json_array(txt)
-        if beats and isinstance(beats, list) and beats:
-            return beats
-        user += "\n\n(이전 출력이 유효한 JSON이 아니었다. 반드시 유효한 JSON 배열만 다시 출력하라.)"
-        print(f"  ⚠ LLM JSON 파싱 실패 — 재요청 {i+1}/{retries}", file=sys.stderr)
-    raise SystemExit("LLM이 유효한 비트 JSON을 생성하지 못했습니다.")
+        txt = ssh_post("/api/generate", {"model": LLM_MODEL, "system": SYS_PROMPT, "prompt": user})
+        arr = repair_json_array(txt)
+        if arr and isinstance(arr, list):
+            ok = [b for b in arr if isinstance(b, dict) and b.get("shot")]
+            if ok:
+                return ok
+        user = base + "\n\n(직전 출력이 유효한 JSON 배열이 아니었다. 반드시 유효한 JSON 배열만.)"
+        print(f"  ⚠ 배치 파싱 실패 — 재요청 {i+1}/{retries}", file=sys.stderr)
+    return []
+
+
+def _has_dialogue(b):
+    return any((d.get("ko") or "").strip() for d in (b.get("dialogue") or []))
+
+
+def llm_beats(logline, cuts):
+    """로컬 LLM 두뇌로 비트를 '배치 누적'해 목표 컷 수·대사를 강제한다.
+
+    qwen은 단일 호출에서 긴 구조화 출력의 개수를 줄이고 필드를 빠뜨린다.
+    그래서 ~8컷씩 이어 생성하고, 대사 없는 비인서트 컷은 보정한다.
+    """
+    BATCH = 8
+    beats, stale = [], 0
+    while len(beats) < cuts and stale < 3:
+        need = min(BATCH, cuts - len(beats))
+        sofar = [(i + 1, b.get("shot", "?"),
+                  " / ".join((d.get("ko") or "") for d in (b.get("dialogue") or []))[:40])
+                 for i, b in enumerate(beats)]
+        got = _ask_batch(logline, cuts, sofar, need)
+        if not got:
+            stale += 1
+            continue
+        stale = 0
+        beats.extend(got)
+        print(f"      …누적 {len(beats)}/{cuts}컷", file=sys.stderr)
+    if not beats:
+        raise SystemExit("LLM이 유효한 비트 JSON을 생성하지 못했습니다.")
+    beats = beats[:cuts]
+    # 대사 누락 비인서트 컷 1회 보정(개별 컷 재요청은 비용↑ → 내레이션 1줄 폴백)
+    miss = [b for b in beats if b.get("shot") != "insert" and not _has_dialogue(b)]
+    if miss:
+        print(f"  ⚠ 대사 누락 {len(miss)}컷 — 내레이션 폴백 삽입", file=sys.stderr)
+        for b in miss:
+            b.setdefault("dialogue", []).append({"type": "narration", "speaker": "", "ko": "…"})
+    return beats
 
 
 def ipfor(shot):
