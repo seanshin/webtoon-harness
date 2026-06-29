@@ -1,5 +1,8 @@
 # 🎬 Webtoon Studio — UX 기획안
 
+> **통합 대상 확정**: 이 UX(6단계 화면)는 그대로 두되, 별도 앱이 아니라 **WeRUB 커뮤니티 플랫폼 `blog`(Next.js)의 소설 기능에 형제 탭으로 합류**한다. 아키텍처/파일 구조/착수 순서는 → [`webtoon-werub-integration.md`](webtoon-werub-integration.md) 참조.
+
+
 > 로컬 웹 GUI로 **원작(소설/문장) 재구성 → 생성(렌더) → 조립**까지 한 흐름에서 구동하는 웹툰 제작 스튜디오.
 > 기존 하네스 자산(`weru_imagegen.py`, 비트시트 생성기, `build_viewer.py`)을 FastAPI 백엔드로 감싸 재사용하고,
 > **WeRU.B 서버의 LLM 기능군(`/api/novel`·`/api/story`·`/api/korean`·`/api/vision`)을 적극 활용**한다.
