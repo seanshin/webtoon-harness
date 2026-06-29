@@ -41,9 +41,10 @@ SSH  = os.environ.get("WERU_SSH",  "weruby@121.161.70.94")
 PORT = os.environ.get("WERU_PORT", "32200")
 API  = os.environ.get("WERU_API",  "http://127.0.0.1:8585")
 
-# 서버에서 실행되는 워커: stdin으로 {"jobs":[payload,...]} 받아 큐 등록→폴링(429 백오프)→
-# "<idx>\t<status>\t<filename>" 출력. 서버 레이트리밋을 피하려고 가장 오래된 미완료 1건만
-# 라운드로빈 폴링하고, 429에 지수 백오프한다.
+# 서버 워커 — argv 모드로 동작(짧은 연결로 분리해 장시간 SSH 연결 끊김을 회피).
+#   submit : stdin {"jobs":[payload,...]} → 각 job_id 한 줄씩 출력 (빠름, <10s)
+#   status : stdin {"ids":[id,...]}       → "<id>\t<status>\t<filename>" 한 줄씩 (1패스)
+# 둘 다 429에 지수 백오프. 폴링 루프는 Mac 측에서 짧은 status 호출을 반복해 돈다.
 WORKER = r'''
 import sys, json, time, urllib.request, urllib.error
 BASE = "%s"
@@ -62,35 +63,33 @@ def call(path, data=None, tries=6):
             if e.code == 429 and i < tries - 1:
                 time.sleep(delay); delay = min(delay * 2, 20); continue
             raise
-req = json.loads(sys.stdin.read())
-jobs = req["jobs"]
-ids = [call("/api/image/generate", p).get("job_id") for p in jobs]
-results = [None] * len(ids)
-deadline = time.time() + 30 * 60
-i = 0
-while time.time() < deadline and any(r is None for r in results):
-    if results[i] is None and ids[i]:
-        s = call("/api/image/status/%%s" %% ids[i])
-        st = s.get("status")
-        if st == "completed":
-            fn = (s.get("images") or [{}])[0].get("filename", "")
-            results[i] = ("completed", fn)
-        elif st == "failed":
-            results[i] = ("failed", str(s.get("error")))
-    if all(r is not None for r in results):
-        break
-    i = (i + 1) %% len(ids)
-    if i == 0:
-        time.sleep(2)
-for k, r in enumerate(results):
-    if r is None:
-        r = ("timeout", "")
-    print("%%d\t%%s\t%%s" %% (k, r[0], r[1]))
+mode = sys.argv[1]
+data = json.loads(sys.stdin.read())
+if mode == "submit":
+    for p in data["jobs"]:
+        try:
+            print(call("/api/image/generate", p).get("job_id", ""))
+        except Exception as e:
+            print("")  # 빈 줄 = 제출 실패
+elif mode == "status":
+    for jid in data["ids"]:
+        if not jid:
+            print("\tfailed\t"); continue
+        try:
+            s = call("/api/image/status/%%s" %% jid)
+            st = s.get("status")
+            fn = (s.get("images") or [{}])[0].get("filename", "") if st == "completed" else ""
+            print("%%s\t%%s\t%%s" %% (jid, st, fn))
+        except Exception:
+            print("%%s\terror\t" %% jid)
 ''' % API
 
 
 def ssh(remote_cmd, input_bytes=None, capture=True):
-    cmd = ["ssh", "-p", PORT, SSH, remote_cmd]
+    # 짧은 연결만 사용하되, NAT/유휴 끊김 방지를 위해 keepalive 옵션을 둔다.
+    cmd = ["ssh", "-p", PORT,
+           "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=8",
+           "-o", "TCPKeepAlive=yes", SSH, remote_cmd]
     return subprocess.run(cmd, input=input_bytes,
                           capture_output=capture, check=False)
 
@@ -146,28 +145,56 @@ def cmd_gen(args):
     if scp_to(worker_path, "/tmp/weru_gen.py").returncode != 0:
         sys.exit("ERROR: 워커 업로드 실패")
 
-    payload = json.dumps({"jobs": payloads}).encode()
-    r = ssh("python3 /tmp/weru_gen.py", input_bytes=payload)
-    lines = r.stdout.decode(errors="replace").strip().splitlines()
-    if not lines:
-        sys.exit("ERROR: 워커 무응답\n" + r.stderr.decode(errors="replace"))
+    # 1) 제출 (짧은 연결) → job_id 목록
+    r = ssh("python3 /tmp/weru_gen.py submit",
+            input_bytes=json.dumps({"jobs": payloads}).encode())
+    ids = r.stdout.decode(errors="replace").strip("\n").split("\n")
+    if not ids or all(not i for i in ids):
+        sys.exit("ERROR: 잡 제출 실패\n" + r.stderr.decode(errors="replace"))
+    if len(ids) != len(outputs):
+        sys.exit(f"ERROR: 제출 수({len(ids)}) != 잡 수({len(outputs)})")
+    # job_id를 로컬에 저장(연결 끊겨도 복구 가능)
+    with open(os.path.join(args.out_dir, ".jobids.json"), "w") as f:
+        json.dump(dict(zip(outputs, ids)), f, ensure_ascii=False, indent=2)
+    print(f"제출 완료: {sum(bool(i) for i in ids)}/{len(ids)} → 폴링 시작", file=sys.stderr)
 
+    # 2) 폴링 (짧은 status 호출 반복 — 연결을 길게 잡지 않음)
+    settled = {}  # idx -> (status, filename)
+    import time as _t
+    for round_no in range(240):  # 최대 ~12분
+        pending = [i for i in range(len(ids)) if i not in settled and ids[i]]
+        for i in range(len(ids)):
+            if i not in settled and not ids[i]:
+                settled[i] = ("failed", "")  # 제출 실패분
+        if not pending:
+            break
+        rs = ssh("python3 /tmp/weru_gen.py status",
+                 input_bytes=json.dumps({"ids": [ids[i] for i in pending]}).encode())
+        for line, i in zip(rs.stdout.decode(errors="replace").strip("\n").split("\n"), pending):
+            parts = line.split("\t")
+            if len(parts) != 3:
+                continue
+            _, st, fn = parts
+            if st == "completed":
+                settled[i] = ("completed", fn)
+            elif st in ("failed", "error"):
+                settled[i] = ("failed", fn)
+        if len(settled) >= len(ids):
+            break
+        _t.sleep(3)
+
+    # 3) 다운로드 + 리포트
     report = []
-    for line in lines:
-        parts = line.split("\t")
-        if len(parts) != 3:
-            continue
-        idx, status, filename = int(parts[0]), parts[1], parts[2]
-        out_name = outputs[idx]
-        dest = os.path.join(args.out_dir, out_name)
-        ok = False
-        if status == "completed" and filename:
-            ok = download(filename, dest)
-            status = "downloaded" if ok else "download_failed"
-        report.append((out_name, status, filename))
-        print(f"{out_name}\t{status}\t{filename}")
+    for i in range(len(ids)):
+        st, fn = settled.get(i, ("timeout", ""))
+        out_name = outputs[i]
+        if st == "completed" and fn:
+            ok = download(fn, os.path.join(args.out_dir, out_name))
+            st = "downloaded" if ok else "download_failed"
+        report.append((out_name, st, fn))
+        print(f"{out_name}\t{st}\t{fn}")
 
-    bad = [r for r in report if r[1] != "downloaded"]
+    bad = [x for x in report if x[1] != "downloaded"]
     if bad:
         sys.stderr.write(f"\n경고: {len(bad)}개 잡 실패 → 재렌더 필요: "
                          + ", ".join(b[0] for b in bad) + "\n")
