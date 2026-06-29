@@ -156,7 +156,7 @@ CLI 하네스에 이어, **웹 GUI 스튜디오**를 기획했다. 별도 앱이
 - 📐 [UX 기획안](docs/webtoon-studio-ux.md) — 6단계 파이프라인(원작·재구성 → 스토리보드 → 캐스트 → 렌더 → 레터링·조립 → 익스포트), 화면별 목업, 하이브리드 게이트.
 - 🔌 [WeRUB 통합 스펙](docs/webtoon-werub-integration.md) — `blog`(Next.js) 코드베이스 기준 추가 파일 트리·데이터 흐름·렌더 파이프라인(기존 `generate-image` SSE 확장)·마일스톤·CLI 착수 체크리스트.
 - 🧪 [이식 원본 예제](examples/ep01_full/) — 비트시트 생성기 + 뷰어 빌더(검증된 운영값을 TS로 이식할 레퍼런스).
-- 🤖 [Claude 없이 도는 독립 CLI](examples/standalone_cli/) — `werubtoon.py`. WeRU.B 로컬 LLM(qwen2.5)을 두뇌로 써서 로그라인 → 비트 → 렌더 → 뷰어까지 **Claude 미사용** 완전 자율. 통합의 참조 구현/스모크 테스트.
+- 🤖 [Claude 없이 도는 독립 CLI](examples/standalone_cli/) — `werubtoon.py`. WeRU.B 로컬 LLM(qwen2.5)을 두뇌로 써서 로그라인 → 비트 → 렌더 → 뷰어까지 **Claude 미사용** 완전 자율. **50컷 풀 에피소드 E2E 실증**(비트 50/50·패널 50/50, 캐릭터 일관성 유지). 통합의 참조 구현/스모크 테스트.
 
 > 구현은 WeRUB repo의 Claude Code CLI에서 진행한다. 위 두 문서 + 예제가 작업 지시서.
 
