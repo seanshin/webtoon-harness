@@ -39,6 +39,20 @@ ssh -p 32200 weruby@121.161.70.94 "curl -s -o /dev/null -w '%{http_code}' http:/
 - **텍스트 금지**: negative에 `text, speech bubble, caption, signature, watermark`. (서버가 "AI 생성" 워터마크를 자동 삽입하니 그 외 글자만 막으면 된다.)
 - **시드**: `seed`로 재현 가능. 재렌더 시 시드를 바꿔 변주한다.
 
+### 품질 프로파일 (draft / hq)
+
+`style-bible.md`의 `quality_profile`(기본 `draft`)로 전환한다. prompt-smith가 이 값에 따라 jobs.json에 품질 파라미터를 주입한다.
+
+| 프로파일 | 용도 | 추가 파라미터 |
+|---------|------|--------------|
+| **draft** (기본) | 초안·반복 — 빠름 | 모델 기본 steps, `width/height` 832×1216 |
+| **hq** | 최종본 | `steps:30`, `cfg:6.5`, `width:896, height:1280`, 프롬프트에 `, masterpiece, best quality, highly detailed, sharp focus, intricate details`, negative에 `lowres, blurry, jpeg artifacts, bad anatomy, deformed, extra fingers` 추가 |
+
+- **dreamshaper는 Turbo지만 steps 30에서 뭉개지지 않고 향상**됨(PoC 검증). 해상도·품질토큰 효과가 큼.
+- **속도 트레이드오프**: hq는 패널당 ~3~4배 느림. **권장 운영 = 초안은 draft로 전체 렌더 → 검증·확정 후 최종본만 hq로 재렌더.**
+- character_id·샷별 IP-Adapter 규약은 두 프로파일 공통(품질만 다름).
+- `lcm_mode`/`style:lcm-fast`는 속도용 — hq와 함께 쓰지 않는다(품질 절충).
+
 ## 0단계 — 캐릭터 레퍼런스 렌더 + character_id 등록 (ref-sheet-artist)
 
 패널보다 먼저, 주요 캐릭터의 **대표 레퍼런스(정면 상반신, 깨끗한 외형)**를 렌더하고 등록한다. 이것이 모든 패널 일관성과 검증의 닻이다.

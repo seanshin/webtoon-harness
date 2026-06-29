@@ -39,6 +39,12 @@ model: opus
 - `character_id`는 **refs/INDEX.md**의 확정 UUID에서 가져온다. 다중 캐릭터 패널은 주연 1명을 `character_id`로 잡고 나머지는 외형 토큰으로 묘사한다.
 - `character_id`는 **SDXL 계열만 지원**(dreamshaper/animagine/sdxl/juggernaut/realvis). flux는 IP-Adapter 미지원이므로 **일관성이 필요한 패널은 반드시 SDXL(기본 `dreamshaper`)을 쓴다.** 작화 기본은 `model=dreamshaper`, `style=illustration`(한국 웹툰 만화체).
 
+## 품질 프로파일 주입 (draft / hq)
+style-bible의 `quality_profile`(기본 `draft`)에 따라 모든 잡에 품질 파라미터를 주입한다(panel-render SKILL "품질 프로파일" 참조).
+- **draft**: 추가 없음(모델 기본 steps, `width:832, height:1216`). 초안·반복용, 빠름.
+- **hq**: 각 잡에 `steps:30`, `cfg:6.5`, `width:896, height:1280`을 넣고, **프롬프트 끝에 품질 토큰**(`, masterpiece, best quality, highly detailed, sharp focus, intricate details`), **negative에 품질 제거 토큰**(`lowres, blurry, jpeg artifacts, bad anatomy, deformed, extra fingers`)을 추가한다. 최종본용.
+- 샷별 IP-Adapter(위) 규약은 두 프로파일 공통 — 품질만 다르다. `lcm_mode`/`lcm-fast`는 hq와 병용 금지.
+
 ## 입력/출력 프로토콜
 - 입력:
   - `_workspace/04_visual/ep{NN}_shotlist.md` — 패널별 연출 명세(scene_id/location + **`shot:`** + **`bubble-space:`** 여백 위치 힌트 포함)
