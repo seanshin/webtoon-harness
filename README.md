@@ -149,6 +149,18 @@ cp -r webtoon-harness/.claude /path/to/your-project/
 
 ---
 
+## 🎨 Webtoon Studio (차기 — WeRUB 통합)
+
+CLI 하네스에 이어, **웹 GUI 스튜디오**를 기획했다. 별도 앱이 아니라 **WeRUB 커뮤니티 플랫폼(`blog`, Next.js)의 소설 기능에 형제 탭으로 합류**한다 — 컨셉은 **소설 → 웹툰 각색**(원작 재구성이 본류). 텍스트(소설 분해·분석·재구성)도 이미지(렌더)도 WeRU.B 서버 하나로 자급.
+
+- 📐 [UX 기획안](docs/webtoon-studio-ux.md) — 6단계 파이프라인(원작·재구성 → 스토리보드 → 캐스트 → 렌더 → 레터링·조립 → 익스포트), 화면별 목업, 하이브리드 게이트.
+- 🔌 [WeRUB 통합 스펙](docs/webtoon-werub-integration.md) — `blog`(Next.js) 코드베이스 기준 추가 파일 트리·데이터 흐름·렌더 파이프라인(기존 `generate-image` SSE 확장)·마일스톤·CLI 착수 체크리스트.
+- 🧪 [이식 원본 예제](examples/ep01_full/) — 비트시트 생성기 + 뷰어 빌더(검증된 운영값을 TS로 이식할 레퍼런스).
+
+> 구현은 WeRUB repo의 Claude Code CLI에서 진행한다. 위 두 문서 + 예제가 작업 지시서.
+
+---
+
 ## 📝 라이선스
 
 [MIT](LICENSE)
