@@ -1,45 +1,61 @@
 ---
 name: webtoon-panel-render
-description: "웹툰 패널 이미지를 codex-image(codex exec image_generation)로 동시 5장씩 병렬 렌더링하는 스킬. 패널 렌더 전 캐릭터 다각도 레퍼런스 시트를 먼저 렌더해 일관성 기준을 만들고, 패널 프롬프트 목록(ep{NN}_prompts.md)에 일관성 토큰·레퍼런스 앵커·씬 장소 토큰·in-image 말풍선(한글 대사 포함)을 주입해 배치 생성하며, panel-validator의 생성-검증 루프로 기준 만족까지 재렌더한다. codex 전역 동시 세션 5개 한도를 지키고 0바이트·손상·md5 중복 PNG를 재시도한다. '패널 렌더링', '웹툰 이미지 생성', '레퍼런스 시트', '패널 이미지 배치 생성', '50장 그리기', 'codex로 패널 그려', 그리고 후속 작업 '패널 다시 그려/재렌더/수정/일부만 다시'에도 반드시 이 스킬을 사용. 단일 단발 이미지나 정밀 마스킹 편집은 codex-image/gpt-image2가 더 적합."
+description: "웹툰 패널 이미지를 로컬 GPU 서버(WeRU.B 이미지 API)로 배치 렌더링하는 스킬. 패널 렌더 전 캐릭터 레퍼런스를 먼저 렌더해 character_id(IP-Adapter)로 등록하고, 패널 프롬프트 목록(ep{NN}_prompts.md)에 일관성 토큰·character_id·씬 장소 토큰을 주입해 배치 생성한다. 한글 말풍선은 이미지에 굽지 않고 말풍선 자리만 비워둔 채 그리며(한글은 조립 단계 HTML 오버레이가 얹음), panel-validator의 생성-검증 루프로 기준 만족까지 재렌더한다. 0바이트·손상·md5 중복 PNG를 재시도한다. '패널 렌더링', '웹툰 이미지 생성', '레퍼런스 시트', '패널 이미지 배치 생성', '50장 그리기', '패널 그려', 그리고 후속 작업 '패널 다시 그려/재렌더/수정/일부만 다시'에도 반드시 이 스킬을 사용. 단일 단발 이미지 생성은 WeRU.B API를 직접 호출하는 편이 빠르다."
 ---
 
-# Webtoon Panel Render — 레퍼런스 → 베이크 렌더 → 검증 루프
+# Webtoon Panel Render — 레퍼런스(character_id) → 아트 렌더 → 검증 루프
 
-웹툰 한 회차의 50+ 패널을 codex-image로 **동시 5장씩** 빠르게 렌더링하는 스킬. prompt-smith가 만든 패널 프롬프트 목록을 입력으로, 일관성을 지키며 PNG를 양산하고 검증한다.
+웹툰 한 회차의 50+ 패널을 **로컬 GPU 서버(WeRU.B 이미지 API)**로 배치 렌더링하는 스킬. prompt-smith가 만든 패널 프롬프트 목록을 입력으로, 일관성을 지키며 PNG를 양산하고 검증한다. 렌더는 `scripts/weru_imagegen.py`(SSH 경유 API 호출 CLI)로 수행한다.
 
-이 스킬은 `~/.claude/skills/codex-image`의 병렬 패턴 위에 **웹툰 특화 일관성·검증·동시성 규약**을 얹은 것이다. codex 호출 방식의 원본은 codex-image SKILL.md를 따른다.
+> **백엔드 = 사용자 로컬 서버.** 외부 codex/OpenAI를 쓰지 않는다. `seanshin/WeRUBLLMManager`(WeRU.B AI Server Admin, RTX 5080)의 이미지 API를 SSH 무암호 키로 호출한다. 모델/일관성/배치 능력이 codex보다 우수하다.
 
-핵심 4원칙(EP01 제작 피드백 반영):
-1. **레퍼런스 먼저(일관성).** 패널을 그리기 전에 캐릭터 다각도/표정 레퍼런스 시트를 먼저 렌더해 외형 기준(SSOT)을 확정한다. 텍스트 토큰만으로는 매번 다른 얼굴이 나온다.
-2. **모든 텍스트 in-image 베이크(후작업 절대 금지).** 말풍선 대사·효과음·화면 UI·환경 문자 등 **모든 텍스트를 이미지 생성 시 작화에 함께 그린다**(HTML 오버레이도, 포토샵 타이핑도, 어떤 후작업 합성도 없다). 그래서 "no text" 부정 프롬프트를 쓰지 않는다. 또한 결과가 **베이크처럼 보여야** 한다 — 텍스트는 작화와 같은 손그림 잉크 톤으로 녹아들어야 하고, 깨끗한 디지털 폰트를 평평하게 얹은 "붙여넣기" 느낌이면 실패(통합 레터링, EP01 P30·P33 피드백).
-3. **배경 씬 단위 고정.** 씬별 장소 토큰(LOC_*)을 모든 패널에 주입해 배경 급변(도로→실내 등)을 막는다.
+핵심 4원칙:
+1. **레퍼런스 먼저(일관성 SSOT).** 패널을 그리기 전에 캐릭터 레퍼런스를 렌더하고 **`character/create`로 등록해 `character_id`를 확정**한다. 이후 모든 패널은 그 `character_id`(IP-Adapter)로 같은 인물을 유지한다. 텍스트 토큰만으로는 매번 다른 얼굴이 나온다.
+2. **아트만 그린다 — 텍스트는 굽지 않는다.** 로컬 모델은 이미지 안 한글(CJK)을 못 그린다. 그래서 말풍선·대사·효과음을 **이미지에 굽지 않고**, 말풍선이 들어갈 **여백만 비워둔 채** 작화만 렌더한다. 한글 대사는 **조립 단계에서 HTML/CSS 오버레이**가 얹는다(letterer 명세 → episode-compositor). negative 프롬프트에 `text, speech bubble, caption, watermark`를 넣어 이미지 내 글자를 억제한다.
+3. **배경 씬 단위 고정.** 씬별 장소 토큰(LOC_*)을 같은 scene_id의 모든 패널에 주입해 배경 급변(도로→실내 등)을 막는다.
 4. **검증-재생성 루프.** panel-validator가 패널을 6축으로 검사하고 미달분을 기준 만족까지 되돌려 재렌더한다.
 
 ## 사전 점검 (회차당 1회)
 
+로컬 서버 도달성을 확인한다(렌더 도중 멈추지 않도록 시작 전에).
+
 ```bash
-codex --version                                # 0.128+ 권장
-codex login status                             # "Logged in using ChatGPT" 확인
-codex features list | grep image_generation    # stable/true 확인
+ssh -p 32200 weruby@121.161.70.94 "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8585/api/image/models"
+# 200 이면 정상. 아니면 사용자에게 서버/SSH 상태 확인을 요청한다.
 ```
 
-미로그인이면 사용자에게 `codex login` 실행을 요청한다. 렌더 도중 멈추지 않도록 시작 전에 확인한다.
+접속 정보는 `scripts/weru_imagegen.py` 상단(환경변수 `WERU_SSH/WERU_PORT/WERU_API`로 덮어쓰기 가능). 기본 `weruby@121.161.70.94:32200` → `http://127.0.0.1:8585`.
 
-## 0단계 — 캐릭터 레퍼런스 시트 먼저 렌더 (ref-sheet-artist)
+## 모델·일관성 규약 (PoC 검증값)
 
-패널보다 먼저, 주요 캐릭터의 **다각도/표정 레퍼런스 시트**를 렌더해 시리즈 외형 기준을 확정한다. 이것이 모든 패널 일관성과 검증의 닻이다.
+- **작화 기본**: `model=dreamshaper`, `style=illustration` — 한국 웹툰 만화체. (대안: `animagine`/`anime` = 일본 애니풍.)
+- **캐릭터 일관성 = `character_id`(IP-Adapter) + 샷별 강도**:
+  | 샷 종류 | ip_adapter_mode | ip_adapter_strength |
+  |--------|-----------------|---------------------|
+  | 와이드·풀바디·액션 | `full` | **0.4** |
+  | 감정 클로즈업 | `face` | **0.5** |
+  - **strength ≥ 0.6 금지** — 구도·표정이 정면 상반신으로 붕괴한다(PoC에서 0.7이 모든 패널을 비슷한 초상화로 만들었다). 0.4~0.5가 "같은 인물, 다른 샷"을 만든다.
+  - `character_id`는 **SDXL 계열만 지원**(dreamshaper/animagine/sdxl/juggernaut/realvis). flux는 IP-Adapter 미지원 → 빠른 프로토타입에만.
+- **텍스트 금지**: negative에 `text, speech bubble, caption, signature, watermark`. (서버가 "AI 생성" 워터마크를 자동 삽입하니 그 외 글자만 막으면 된다.)
+- **시드**: `seed`로 재현 가능. 재렌더 시 시드를 바꿔 변주한다.
+
+## 0단계 — 캐릭터 레퍼런스 렌더 + character_id 등록 (ref-sheet-artist)
+
+패널보다 먼저, 주요 캐릭터의 **대표 레퍼런스(정면 상반신, 깨끗한 외형)**를 렌더하고 등록한다. 이것이 모든 패널 일관성과 검증의 닻이다.
 
 - 입력: `_workspace/04_visual/character-sheets.md`(불변 토큰), `style-bible.md`(작화 스타일).
-- 캐릭터마다 2장 권장:
-  - `refs/{IDTAG}_turnaround.png` — 정면/3-4/측면/후면 **전신**, 중립 단색 배경, 균일 조명, 무표정.
-  - `refs/{IDTAG}_expressions.png` — 핵심 표정 3~4종 클로즈업.
-- 레퍼런스 프롬프트 규약:
-  - 글로벌 작화 스타일 토큰 + 캐릭터 불변 토큰 + "character reference sheet, multiple angles (front, 3/4, side, back), full body, neutral grey background, even flat lighting, model sheet".
-  - **식별 표식(점/흉터/팔찌 등)을 또렷이**, 좌/우 위치 고정.
-  - 레퍼런스만은 **텍스트 없이**: `no text, no labels, no speech bubbles, no watermark`(깨끗한 외형 도감이어야 기준이 된다 — 패널의 in-image 말풍선과 반대).
-- 저장: `_workspace/04_visual/refs/`(회차 폴더가 아니라 **시리즈 자산**, 다음 회차 재사용). `refs/INDEX.md`에 캐릭터별 경로+핵심 외형 한 줄+확정 여부 기록.
-- 렌더 후 0바이트/손상/md5 중복 확인, 각도 간 동일인 여부 육안 점검. 흔들리면 재렌더(최대 3회). 확정 시 prompt-smith·panel-validator에 INDEX.md 인계.
-- **후속 회차**: refs/가 이미 있으면 재렌더하지 않고 재사용한다(시리즈 일관성). 신규 캐릭터만 추가 렌더.
+- 캐릭터마다:
+  1. 대표 레퍼런스 1장을 렌더 — 글로벌 작화 토큰 + 캐릭터 불변 토큰 + "front view, upper body, neutral expression, clean lineart, plain background, character reference". 식별 표식(점/흉터/팔찌 등)을 또렷이, 좌/우 위치 고정. **텍스트 없이**(`text, watermark` negative).
+  2. 그 PNG를 `weru_imagegen.py register`로 등록해 `character_id`를 받는다.
+  ```bash
+  python3 .claude/skills/webtoon-panel-render/scripts/weru_imagegen.py \
+    register --image _workspace/04_visual/refs/{IDTAG}_ref.png --name {idtag} --tags webtoon,{role}
+  # → {"character_id":"...", ...}
+  ```
+- 저장: `_workspace/04_visual/refs/`(회차 폴더가 아니라 **시리즈 자산**, 다음 회차 재사용). `refs/INDEX.md`에 캐릭터별 **`character_id`** + 레퍼런스 경로 + 핵심 외형 한 줄 + 확정 여부를 기록.
+- 등록 후 동일 `character_id`로 표정/포즈 2~3장을 시험 렌더해 일관성을 육안 확인. 흔들리면 레퍼런스를 다시 골라 재등록.
+- 확정 시 `INDEX.md`(특히 `character_id`)를 prompt-smith·panel-validator에 인계.
+- **후속 회차**: refs/INDEX.md의 `character_id`가 이미 있으면 재등록하지 않고 재사용(시리즈 일관성). 신규 캐릭터만 추가 등록.
 
 ## 입력 — 패널 프롬프트 목록
 
@@ -49,133 +65,110 @@ codex features list | grep image_generation    # stable/true 확인
 ### panel_001
 - scene_group: A
 - scene_id: S2 / location: LOC_CLASSROOM
-- prompt: "<글로벌 스타일 + 장소 토큰 + 캐릭터 토큰&레퍼런스 앵커 + 구도/상태색 + in-image 말풍선(한글 대사) + negative(no watermark/English/gibberish)>"
-- output: _workspace/05_panels/ep{NN}/panel_001.png
+- shot: wide            # wide|full|action → full/0.4 ; close|emotion → face/0.5
+- character_ids: [jiho]
+- prompt: "<글로벌 스타일 + 장소 토큰 + 구도/감정/상태색 — 영어, 텍스트/말풍선 없음, 말풍선 자리 비움>"
+- negative: "text, speech bubble, caption, watermark, ..."
+- output: panel_001.png
 ```
 
-렌더 전 출력 디렉토리를 만든다: `mkdir -p _workspace/05_panels/ep{NN}`
+prompt-smith가 이 목록과 함께 **잡 JSON**(`ep{NN}_jobs.json`)을 만든다 — 각 패널을 `weru_imagegen.py gen`이 먹는 형식으로:
 
-## 일관성 토큰 검증 (렌더 전 필수)
+```json
+[
+  {"output":"panel_001.png","prompt":"...","model":"dreamshaper","style":"illustration",
+   "negative_prompt":"text, speech bubble, caption, watermark, ...",
+   "character_id":"<jiho-uuid>","ip_adapter_mode":"full","ip_adapter_strength":0.4,
+   "width":832,"height":1216,"seed":1001}
+]
+```
 
-패널 간 캐릭터 외형·작화 스타일·배경이 흔들리면 웹툰이 무너진다. codex-image는 시드 고정이 어렵기 때문에 **프롬프트 텍스트의 일관성 토큰 + 확정 레퍼런스 앵커**가 일관성 장치다. 그래서 렌더 직전에 각 프롬프트가 다음을 포함하는지 확인한다:
+## 일관성 점검 (렌더 전 필수)
 
-1. **작화 스타일 토큰** — `style-bible.md`의 고정 스타일 키워드.
-2. **등장 캐릭터의 외형 토큰 + 레퍼런스 앵커** — `character-sheets.md`의 고정 키워드 세트 + `refs/{IDTAG}_*.png` 확정 레퍼런스를 외형 기준으로 명시(식별 표식 좌/우 포함).
-3. **씬 장소 고정 토큰(LOC_*)** — 같은 scene_id의 모든 패널에 동일한 장소 배경 토큰. 배경 급변 방지의 핵심.
-4. **화면비/구도/상태색 지시** — 샷리스트의 앵글·구도·장면 색(평상/되감기/정산 등).
-5. **in-image 말풍선/한글 대사** — lettering.md의 말풍선(종류·정확한 한글 원문·위치). 무대사 패널은 제외.
+각 잡이 다음을 포함하는지 확인한다. 누락·모호하면 prompt-smith에 보강 요청:
+1. **작화 스타일** — `model`/`style` + style-bible 키워드가 프롬프트에 반영됐는가.
+2. **등장 캐릭터의 `character_id`** — refs/INDEX.md의 확정 UUID. (다중 캐릭터 패널은 주연 1명을 character_id로, 나머지는 외형 토큰으로.)
+3. **샷별 IP-Adapter** — `shot`에 맞는 mode/strength(위 표). strength ≥ 0.6 금지.
+4. **씬 장소 토큰(LOC_*)** — 같은 scene_id의 모든 패널에 동일 배경 토큰.
+5. **텍스트 억제 + 말풍선 여백** — negative에 `text, speech bubble`, 프롬프트에 "empty space for speech bubble"(letterer가 지정한 위치 쪽).
 
-부정 프롬프트는 `no text`가 아니라 `no watermark, no English text, no gibberish/garbled/misspelled text`다(말풍선·한글은 그려야 하므로). 누락·모호하면 prompt-smith에 보강을 요청한다. 일관성 토큰·레퍼런스·장소 토큰 없는 패널은 렌더하지 않는다 — 다시 그리는 비용이 더 크다.
+character_id·장소 토큰 없는 패널은 렌더하지 않는다 — 다시 그리는 비용이 더 크다.
 
-## 핵심 — 동시 5장 배치 렌더링
+## 핵심 — 배치 렌더링
 
-**codex 전역 동시 세션은 5개를 절대 넘기지 않는다.** ChatGPT 플랜의 동시 요청 한도 때문에 6개+는 큐잉으로 응답이 들쭉날쭉해지고 일부 작업이 비정상적으로 길어진다. panel-artist가 3명이어도 **세 아티스트의 codex exec 동시 실행 총합이 5 이하**가 되도록 오케스트레이터가 렌더 패스를 순차 디스패치한다.
-
-### 방법 A (권장) — 배치 헬퍼 스크립트
-
-codex-image의 배치 헬퍼가 임의 개수를 5장씩 자동 배치한다. 한 회차 전체(또는 한 scene 그룹)를 한 번에 넘긴다:
+서버는 **큐 기반**(최대 1만 건, VRAM 경합 없이 순차 처리)이라 codex 같은 동시 세션 한도를 걱정할 필요가 없다. **한 회차 전체(또는 scene 그룹)를 한 번에 큐에 넣는다.**
 
 ```bash
-~/.claude/skills/codex-image/scripts/codex_imagegen_batch.sh \
-  _workspace/05_panels/ep{NN} \
-  "<panel_001 프롬프트>::panel_001.png" \
-  "<panel_002 프롬프트>::panel_002.png" \
-  ... (임의 개수, 내부에서 5개씩 동시 실행)
+python3 .claude/skills/webtoon-panel-render/scripts/weru_imagegen.py \
+  gen --jobs _workspace/04_visual/ep{NN}_jobs.json \
+      --out-dir _workspace/05_panels/ep{NN}
 ```
 
-- 한 배치(5장)가 끝나면 다음 배치를 시작하므로 동시 세션이 5를 넘지 않는다.
-- 출력 PNG는 모두 `_workspace/05_panels/ep{NN}/`에 저장된다.
-- 프롬프트가 길면 셸 따옴표 이스케이프에 주의한다. 프롬프트 목록을 파일로 만들어 넘기는 것이 안전하다(아래 방법 B 참고).
-
-### 방법 B — 수동 5장 병렬 (세밀 제어가 필요할 때)
-
-한 메시지에서 **정확히 5개**의 Bash 도구를 `run_in_background: true`로 동시에 띄운다. 출력 파일명이 모두 달라야 한다(같은 경로면 마지막만 남는다):
-
-```bash
-codex exec --sandbox workspace-write --skip-git-repo-check \
-  --cd /Users/robin/Downloads/webtoon-new \
-  -o /tmp/codex-ep{NN}-001.md \
-  "이미지 생성 도구로 '<panel_001 프롬프트>' 이미지를 생성하고 ./_workspace/05_panels/ep{NN}/panel_001.png 로 저장. 파일 경로만 한 줄로 보고."
-# 같은 패턴으로 panel_002~panel_005를 각각 run_in_background:true 로 동시에. 총 5개.
-```
-
-- 5장 완료 통지를 받은 뒤 다음 5장을 띄운다. **`sleep` 폴링 금지** — 백그라운드 완료 통지가 자동으로 온다.
-- `--ask-for-approval`을 붙이지 않는다(비대화형이라 즉시 에러 종료).
-- git 리포가 아니면 `--skip-git-repo-check`를 빠뜨리지 않는다.
+- 헬퍼가 모든 잡을 큐에 등록 → 완료를 백오프 폴링(서버 레이트리밋 429 자동 대기) → 각 PNG를 `output` 파일명으로 다운로드한다.
+- 출력 한 줄씩 `<output>\t<status>\t<server_filename>`. 실패 잡이 있으면 stderr에 목록 + exit 2.
+- **부분 렌더**: 재렌더할 패널만 담은 잡 JSON을 따로 만들어 같은 명령으로 돌린다(전체 재실행 금지).
 
 ### 분량·소요 시간 기대치
 
-| 패널 수 | 배치(5장) 수 | 예상 렌더 시간 |
-|--------|------------|--------------|
-| 50장 | 10 웨이브 | 약 26~28분 (웨이브당 ~160초) |
-| 60장 | 12 웨이브 | 약 32분 |
+| 패널 수 | 예상 렌더 시간(서버 순차) |
+|--------|--------------------------|
+| 50장 | dreamshaper ~6s/장 ≈ 5~6분 (+ 다운로드) |
+| 60장 | ≈ 7분 |
 
-실측 기준 5장 동시 wall-clock ~158초. 사용자에게 렌더가 수십 분 걸림을 미리 알린다.
+LCM 모드(`lcm_mode:true` 또는 `style:lcm-fast`)로 2~3배 가속 가능(품질 약간 절충). 사용자에게 렌더가 수 분 걸림을 미리 알린다.
 
-## 렌더 후 검증 (필수)
-
-생성 직후 항상 파일을 확인한다. codex 세션이 도구 호출에 실패하면 0바이트 PNG가 나올 수 있다.
+## 렌더 후 무결성 검증 (필수)
 
 ```bash
 ls -la _workspace/05_panels/ep{NN}/*.png
-file _workspace/05_panels/ep{NN}/*.png       # 모두 "PNG image data" 인지
-find _workspace/05_panels/ep{NN} -name '*.png' -size 0    # 0바이트 목록
-# md5 중복 검사 (서로 다른 패널이 동일 이미지로 저장되는 사고 — EP01에서 실제 발생)
-md5 -r _workspace/05_panels/ep{NN}/panel_*.png | awk '{print $1}' | sort | uniq -d   # 비면 중복 없음
+file _workspace/05_panels/ep{NN}/*.png                    # 모두 "PNG image data" 인지
+find _workspace/05_panels/ep{NN} -name '*.png' -size 0    # 0바이트 목록 (비어야 정상)
+md5 -r _workspace/05_panels/ep{NN}/panel_*.png | awk '{print $1}' | sort | uniq -d  # md5 중복 (비어야 정상)
 ```
 
-검증 결과 처리:
-- **0바이트/손상 PNG** → 그 패널만 다시 렌더한다(배치 전체 재실행 금지).
-- **md5 중복 PNG** → 중복된 패널을 삭제하고 그 패널만 단독 재렌더한다(동시 배치에서 드물게 한 패널이 다른 패널 이미지를 받는다). 0바이트도 손상도 아니어서 크기/헤더 검사만으로는 못 잡으니 md5 검사를 반드시 한다.
-- **파일이 `~/.codex/generated_images/`에만 있고 작업 폴더에 없음** → 프롬프트의 "./경로로 저장" 지시를 강화해 재시도.
-- **누락된 패널 번호** → prompts 목록과 실제 PNG 목록을 대조해 빠진 번호만 렌더한다.
-- 모든 패널이 존재·유효·고유하면 1차 무결성 통과. 이어서 아래 **검증-재생성 루프**(panel-validator)로 내용 품질을 거른 뒤 quality-reviewer에게 넘긴다.
+처리:
+- **0바이트/손상/다운로드 실패 PNG** → 그 패널만 다시 렌더(헬퍼 stderr의 실패 목록 사용).
+- **md5 중복 PNG** → 중복 패널을 삭제하고 시드를 바꿔 단독 재렌더.
+- **누락 패널 번호** → prompts 목록과 실제 PNG 목록 대조 후 빠진 번호만 렌더.
+- 모든 패널이 존재·유효·고유하면 1차 무결성 통과 → 아래 검증-재생성 루프로.
 
 ## 검증-재생성 루프 (panel-validator) — 기준 만족까지 재렌더
 
-무결성(위)만으로는 부족하다. codex는 같은 프롬프트에도 엉뚱한 배경·다른 얼굴·깨진 한글을 낸다. 그래서 렌더 직후 **패널 단위로** 6축을 검사하고 미달분을 되돌려 재렌더한다(생성-검증 패턴). 통과 패널만 조립으로 간다.
+무결성만으로는 부족하다. 디퓨전은 같은 프롬프트에도 엉뚱한 배경·다른 얼굴·잘못된 구도를 낸다. 렌더 직후 **패널 단위로** 6축을 검사하고 미달분을 되돌려 재렌더한다. 통과 패널만 조립으로 간다.
 
 **6축 검사** (각 패널을 Read로 열어 육안 + 스크립트):
-1. **C1 캐릭터 일관성** — `refs/{IDTAG}_*.png`와 같은 사람인가(헤어/눈/체형/식별 표식·좌우). 의도된 변형(예: 정산 회색화)은 예외.
-2. **C2 배경/장소 연속성** — 배경이 그 패널의 scene_id/location(LOC_*)과 일치하는가. 같은 씬인데 장소 급변(도로→실내)하면 REGEN.
-3. **C3 말풍선 & 한글 텍스트(최대 리스크)** — 말풍선 종류가 맞고, **한글이 대본과 정확히 일치(오탈자·뭉개짐·영어/가짜 글자 없음)**하며 가독한가. 무대사 패널에 말풍선 있으면 REGEN. **+ (d) 통합 레터링: 말풍선·텍스트가 작화에 녹아든 손그림 잉크 톤인가 — 깨끗한 디지털 폰트를 평평하게 얹은 "오버레이/붙여넣기" 느낌이면 텍스트가 맞아도 REGEN**(후작업 텍스트로 오해됨). 판별 신호(OVERLAY=REGEN): 기계적으로 균일한 획·완벽 균등 자간·시스템 고딕 룩·과하게 매끈한 가장자리·그림과 분리된 검정 톤. **철자와 분리해 별도 판별하며, 텍스트 보유 패널 100% 전수 + 1차 통과 후 교차 비교 스윕**(한 패널만 디지털 폰트로 튀는지). 패널별 INTEGRATED/OVERLAY를 validation.md 레터링 원장에 기록 — 집계 도장(C3 강함 ✓)만으로 통과 금지. 상세 절차는 `panel-validator` 정의의 "C3(d) 통합 레터링" 섹션.
-4. **C4 프롬프트 충실도** — 샷 사이즈/앵글/구도/감정/상태색이 의도대로인가.
-5. **C5 대사 흐름** — 앞뒤 패널과 이어 읽어 대화가 자연스러운가.
+1. **C1 캐릭터 일관성** — refs의 `character_id` 기준 인물과 같은 사람인가(헤어/눈/체형/식별 표식·좌우). 의도된 변형은 예외.
+2. **C2 배경/장소 연속성** — 배경이 그 패널의 scene_id/location(LOC_*)과 일치하는가. 같은 씬인데 장소 급변하면 REGEN.
+3. **C3 말풍선 여백 — 텍스트 없음 확인** — 패널에 **굽힌 글자/말풍선이 없어야** 한다(있으면 REGEN: negative 강화·재렌더). 그리고 letterer가 지정한 위치에 **말풍선 오버레이가 들어갈 여백/저복잡도 공간**이 확보됐는가(캐릭터 얼굴·핵심 작화를 가리지 않도록). 한글 정확성 자체는 조립 단계 오버레이에서 보장되므로 여기서는 **"이미지에 글자 없음 + 오버레이 공간 확보"** 만 본다.
+4. **C4 프롬프트 충실도** — 샷 사이즈/앵글/구도/감정/상태색이 의도대로인가. (구도 붕괴 = strength 과다 신호 → 0.4~0.5로 낮춰 재렌더.)
+5. **C5 장면 흐름** — 앞뒤 패널과 이어 보아 인물·시선·동선이 자연스러운가.
 6. **C6 기술 무결성** — 0바이트/손상/md5 중복 아님, 경로·번호 정확.
 
-**루프**: 패널마다 ACCEPT / REGEN(사유+수정 지시). REGEN → prompt-smith가 그 패널 프롬프트만 보강(배경 급변→장소 토큰 강화, 한글 깨짐→텍스트 따옴표·굵게·짧게, 외형 이탈→레퍼런스 앵커·표식 강조, 구도 어긋남→앵글 명시) → 담당 panel-artist가 그 패널만 재렌더 → 재검사. **패널당 최대 3회.** 3회 후에도 미달이면 가장 나은 버전을 **ACCEPT-FLAG**(통과+한계 명시)로 마감하고 `ep{NN}_validation.md`에 기록(무한 루프 방지). C3(한글)이 3회 실패하면 "말풍선 모양 유지 + 가장 정확한 텍스트 버전 채택"으로 마감하고 quality-reviewer에 플래그.
+**루프**: 패널마다 ACCEPT / REGEN(사유+수정 지시). REGEN → prompt-smith가 그 패널 잡만 보강(배경 급변→장소 토큰 강화, 구도 붕괴→strength↓·샷 재명시, 외형 이탈→character_id 확인·식별 표식 강조, 텍스트 새어나옴→negative 강화) → 그 패널만 시드 변경 재렌더 → 재검사. **패널당 최대 3회.** 3회 후에도 미달이면 가장 나은 버전을 **ACCEPT-FLAG**(통과+한계 명시)로 마감하고 `ep{NN}_validation.md`에 기록.
 
-출력: `_workspace/04_visual/ep{NN}_validation.md`(패널별 판정·6축 결과·재생성 횟수·플래그 목록).
+출력: `_workspace/04_visual/ep{NN}_validation.md`(패널별 판정·6축 결과·재생성 횟수·플래그·각 패널의 말풍선 오버레이 가용 공간 메모 → letterer/compositor에 인계).
 
 ## 일부만 다시 그리기 (후속 작업)
 
 quality-reviewer가 FIX/REDO로 지정한 패널만 재렌더한다. 전체를 다시 그리지 않는다.
-
 1. qa_report.md에서 REDO 패널 번호와 수정 지시를 읽는다.
-2. 해당 패널 프롬프트에 수정 지시를 반영(prompt-smith와 조율)한다.
-3. 그 패널들만 5장 이하 배치로 재렌더 → 재검증.
-4. 같은 패널을 2회 재렌더 후에도 실패하면 경고와 함께 통과시키고 보고서에 명시한다(무한 루프 방지).
+2. 해당 패널 잡에 수정 지시 반영(prompt-smith와 조율) + 시드 변경.
+3. 그 패널들만 담은 잡 JSON으로 `weru_imagegen.py gen` 재실행 → 재검증.
+4. 같은 패널을 2회 재렌더 후에도 실패하면 경고와 함께 통과시키고 보고서에 명시.
 
 ## 안티패턴
 
-- **6장 이상 한 배치** — 큐잉으로 응답 분산↑, 일부 작업 비정상 지연.
-- **여러 아티스트가 동시에 각자 5장씩(총 10장+)** — 전역 5 한도 초과. 반드시 순차 디스패치.
-- **포그라운드 직렬 실행** — 병렬 효과 상실. 항상 `run_in_background: true`.
-- **`sleep`로 완료 대기** — 백그라운드 통지가 자동. 폴링 금지.
-- **동일 출력 경로 N개 동시 사용** — 마지막만 남음. 파일명 전부 달라야 함.
-- **md5 중복 미검사** — 동시 배치에서 한 패널이 다른 패널 이미지를 받는 사고를 놓친다(EP01 실제 발생). 크기/헤더만 보지 말 것.
-- **레퍼런스/장소 토큰 누락 렌더** — 외형·배경이 흔들려 재작업 비용 폭증. 레퍼런스 시트 확정 전, 장소 토큰 주입 전에 패널을 렌더하지 않는다.
-- **`no text`로 말풍선 억제** — 이 하네스는 말풍선을 in-image 베이크한다. `no text`를 넣으면 대사가 안 그려진다. 부정은 `no English/gibberish/misspelled text`만.
-- **검증 없이 조립으로 직행** — panel-validator 6축 통과 전 패널은 조립에 넘기지 않는다.
-- **C3 집계 도장** — 패널별 레터링 개별 판정 없이 "C3 강함 ✓"로 일괄 통과. EP01에서 이렇게 13장의 오버레이-룩이 새어 나갔다. 텍스트 보유 패널은 전수로 INTEGRATED/OVERLAY를 원장에 남긴다.
-- **레터링 교차 비교 생략** — 패널을 따로따로만 보면 "한 패널만 디지털 폰트로 튀는" 드리프트를 못 잡는다. 1차 통과 후 텍스트 패널을 모아 나란히 비교한다.
-
-## 비용 주의
-
-- 각 codex 호출은 독립 세션 → 토큰·플랜 메시지 한도를 N배 소모한다.
-- 헤비 배치(50장+) 전 `codex login status`로 플랜 잔량을 확인한다.
+- **이미지에 한글/말풍선 굽기** — 로컬 모델은 한글을 못 그린다. negative로 텍스트를 억제하고 말풍선은 오버레이로. `no text`를 빼면 깨진 가짜 글자가 새어 나온다.
+- **strength ≥ 0.6 사용** — 모든 패널이 비슷한 정면 상반신으로 붕괴(PoC 검증). 와이드 0.4 / 클로즈업 face 0.5 고정.
+- **flux로 캐릭터 일관성 시도** — flux는 IP-Adapter 미지원. 일관성 필요 패널은 SDXL(dreamshaper 등).
+- **레퍼런스/character_id 없이 렌더** — 외형이 흔들려 재작업 비용 폭증. character_id 확정 전, 장소 토큰 주입 전에 패널을 렌더하지 않는다.
+- **동일 출력 파일명 중복** — 잡의 `output`이 겹치면 덮어쓴다. 전부 달라야 함.
+- **md5 중복 미검사** — 드물게 한 패널이 다른 패널 이미지를 받는 사고를 놓친다. 크기/헤더만 보지 말 것.
+- **검증 없이 조립 직행** — panel-validator 6축 통과 전 패널은 조립에 넘기지 않는다.
+- **말풍선 오버레이 공간 무시** — 인물 얼굴 위에 글자가 얹히면 가독·작화가 무너진다. 렌더 시 letterer 지정 위치에 여백을 확보한다.
 
 ## 출력
 
-- `_workspace/05_panels/ep{NN}/panel_001.png` … `panel_0NN.png` (50+장)
+- `_workspace/05_panels/ep{NN}/panel_001.png` … `panel_0NN.png` (50+장, **텍스트 없는 아트**)
 - 렌더 요약(생성/재시도/실패 패널 수)을 episode-compositor와 리더에게 보고.
+- 한글 말풍선은 episode-compositor가 letterer 명세로 오버레이한다(이 스킬은 아트만 책임).

@@ -2,7 +2,7 @@
 
 > 트렌드 조사부터 세로 스크롤 뷰어 완성까지, 웹툰 한 회차를 **AI 에이전트 팀**이 단계별로 만들어내는 Claude Code 하네스.
 
-**27개 전문 에이전트**와 **6개 스킬**로 구성되며, 인기 웹툰 트렌드 조사 → 대사 위주·고긴장·매 회차 반전 시나리오 작성 → 캐릭터 레퍼런스 시트 선행 렌더 → 회차당 50+ 패널을 말풍선·한글 대사 **in-image 베이크**로 병렬 렌더 → 생성-검증 루프로 재생성 → 세로 스크롤 뷰어 조립까지 전 과정을 자동화합니다.
+**27개 전문 에이전트**와 **6개 스킬**로 구성되며, 인기 웹툰 트렌드 조사 → 대사 위주·고긴장·매 회차 반전 시나리오 작성 → 캐릭터 레퍼런스 시트 선행 렌더 → 회차당 50+ 패널을 **로컬 GPU 서버(WeRU.B 이미지 API)**로 배치 렌더(말풍선 자리는 비워 둠) → 생성-검증 루프로 재생성 → 한글 대사를 **HTML 오버레이**로 얹어 세로 스크롤 뷰어 조립까지 전 과정을 자동화합니다.
 
 ![Webtoon Harness 개요](docs/images/01_overview.png)
 
@@ -12,8 +12,8 @@
 
 - **27 에이전트 / 4 단계 팀**: 리서치 → 시나리오 → 비주얼 → 조립검수. 각 Phase마다 팀을 재구성하며 운영합니다.
 - **레퍼런스 시트 선행 렌더**: 캐릭터 다각도·표정 레퍼런스를 먼저 렌더해 회차 간 외형 일관성의 단일 진실원천(SSOT)을 확보합니다.
-- **in-image 말풍선 베이크**: 말풍선과 한글 대사를 이미지 생성 시 함께 그려, 별도 텍스트 오버레이 없이 조립합니다.
-- **병렬 렌더 + 생성-검증 루프**: `codex-image`로 동시 5장씩 배치 렌더하고, `panel-validator`가 6축 검증 후 기준 미달 패널만 재생성합니다.
+- **한글 말풍선 HTML 오버레이**: 로컬 모델은 한글(CJK)을 못 그리므로 작화만 렌더하고 말풍선 자리를 비운 뒤, 한글 대사를 조립 단계 HTML/CSS 오버레이로 정확히 얹습니다.
+- **배치 렌더 + 생성-검증 루프**: 로컬 이미지 서버 큐에 한 회차 전체를 한 번에 넣어 순차 렌더하고, `panel-validator`가 6축 검증 후 기준 미달 패널만 재생성합니다.
 - **연속성 관리**: 회차를 넘어 캐릭터 외형·설정·떡밥(복선)을 누적 추적합니다.
 
 ---
@@ -34,7 +34,7 @@
     ├── webtoon-trend-research/  # 트렌드 리서치 방법론
     ├── webtoon-scenario/        # 시나리오·대본 집필
     ├── webtoon-panel-breakdown/ # 패널 분해·스타일/일관성 토큰
-    ├── webtoon-panel-render/    # codex-image 병렬 렌더
+    ├── webtoon-panel-render/    # 로컬 GPU 서버(WeRU.B) 배치 렌더
     └── webtoon-assembly/        # 세로 스크롤 조립·검수·패키징
 ```
 
@@ -63,13 +63,13 @@
 
 ### 🎨 비주얼팀 — 레퍼런스 선행 + 생성-검증 루프
 
-아트 디렉터의 스타일 바이블 → 캐릭터 레퍼런스 시트 선행 렌더 → 샷리스트·레터링 → 프롬프트 합성 → 3명의 아티스트가 codex로 동시 5장 병렬 렌더 → panel-validator가 6축 검증·재생성 루프를 돌립니다. 말풍선은 이미지에 함께 그려집니다(in-image 베이크).
+아트 디렉터의 스타일 바이블 → 캐릭터 레퍼런스 시트 선행 렌더(character_id 등록) → 샷리스트·레터링 → 프롬프트 합성 → 3명의 아티스트가 로컬 GPU 서버(WeRU.B 이미지 API)로 패널을 배치 렌더 → panel-validator가 6축 검증·재생성 루프를 돌립니다. 말풍선은 이미지에 굽지 않고 자리만 비워두며, 한글 대사는 조립 단계 HTML 오버레이로 얹습니다.
 
 ![비주얼팀](docs/images/04_visual.png)
 
 ### 🧩 조립검수팀 — 조립에서 릴리스까지
 
-말풍선이 베이크된 패널을 세로 스크롤 뷰어로 조립하고, QA 검수·연속성 관리를 거쳐 showrunner가 최종 사인오프 후 RELEASE로 패키징합니다.
+텍스트 없는 패널을 세로 스크롤 뷰어로 조립하며 한글 말풍선을 HTML 오버레이로 얹고, QA 검수·연속성 관리를 거쳐 showrunner가 최종 사인오프 후 RELEASE로 패키징합니다.
 
 ![조립검수팀](docs/images/05_assembly.png)
 
@@ -82,13 +82,13 @@ trend-brief.md
    └→ concept → world → characters → series-arc → {twist-plan, tension-curve}
                                                       └→ beatsheet → script → script_final
 script_final + characters
-   └→ style-bible(+장소토큰, 말풍선 규약) / character-sheets
-        └→ refs/*.png (레퍼런스 시트, 패널 전 선행)
-        └→ shotlist(scene_id/location) + lettering(in-image 말풍선 명세)
-              └→ prompts(스타일+장소+레퍼런스앵커+말풍선 베이크, scene A/B/C)
+   └→ style-bible(+장소토큰, 말풍선 오버레이 규약) / character-sheets
+        └→ refs/*.png + character_id (레퍼런스 시트, 패널 전 선행)
+        └→ shotlist(scene_id/location/shot) + lettering(HTML 오버레이 말풍선 명세)
+              └→ prompts + jobs.json(스타일+장소+character_id+말풍선 여백)
                     └→ panel_*.png ⇄ panel-validator 6축 검증-재생성 루프
                           └→ validation.md (전 패널 통과)
-panel_*.png(말풍선 포함) → index.html(오버레이 없음) → qa_report → RELEASE/ep{NN}/
+panel_*.png(텍스트 없음) → index.html(한글 말풍선 오버레이) → qa_report → RELEASE/ep{NN}/
 ```
 
 **6단계 실행:** Phase 0(컨텍스트 확인) → 1(준비) → 2(리서치) → 3(시나리오) → 4(비주얼) → 5(조립·검수) → 6(마무리).
@@ -119,10 +119,10 @@ cp -r webtoon-harness/.claude /path/to/your-project/
 ### 요구 사항
 
 - **Claude Code** (에이전트·스킬 실행 환경)
-- **codex CLI** (`codex exec`의 `image_generation` 툴) — 패널 이미지 병렬 렌더. ChatGPT OAuth 인증 필요. codex 전역 동시 세션은 **최대 5개**를 지킵니다.
-  - codex CLI 사용 방법은 [`codex-cli` 스킬](https://github.com/revfactory/skills/tree/main/codex-cli)을 참고하세요.
+- **로컬 이미지 생성 서버** (WeRU.B 이미지 API, SSH 접근) — 패널 이미지 배치 렌더. `.claude/skills/webtoon-panel-render/scripts/weru_imagegen.py`가 SSH 무암호 키로 호출합니다.
+  - 서버 도달성은 `ssh ... "curl -s .../api/image/models"`로 사전 점검합니다(접속 정보·환경변수는 `weru_imagegen.py` 상단 참조).
 
-> 💡 이 저장소의 인포그래픽들은 `codex-image`로 16:9 비율 5장을 동시 병렬 렌더해 제작했습니다.
+> 💡 이 저장소의 인포그래픽들은 16:9 비율 이미지 생성으로 제작했습니다.
 
 ---
 
