@@ -21,12 +21,14 @@ model: opus
 ```html
 <div class="viewer">                 <!-- width:720px; margin:0 auto -->
   <div class="panel">                <!-- position:relative -->
-    <img src="../../05_panels/ep{NN}/panel_001.png" alt="...">
+    <img src="data:image/png;base64,iVBORw0KGgo...">   <!-- 패널 PNG를 base64로 임베드 -->
     <div class="bubble tail-bl" style="top:6%; left:6%; max-width:58%;">여기가… 맞나?</div>
   </div>
   ...
 </div>
 ```
+
+**이미지는 반드시 base64 data URI로 임베드한다.** `../../05_panels/...` 상대경로는 일부 브라우저/webview가 `../` 상위 디렉토리 탐색을 막아 이미지가 깨진다(실제 발생). 각 패널 PNG를 읽어 `data:image/png;base64,...`로 박으면 어디서 열어도·이동·공유해도 안 깨지는 단일 산출물이 된다. (HTML이 수~수십 MB로 커지지만 자가완결이 우선.)
 
 - **bubble 필드 매핑**: lettering.md의 각 bubble을 그대로 옮긴다 — `pos.x→left`, `pos.y→top`(또는 하단 정렬이면 `bottom`), `max_width→max-width`, `text_ko→div 내용`(한글 100% 정확, 임의 수정·요약 금지), `tail→꼬리 클래스`(`bottom-left→tail-bl`, `bottom-right→tail-br`, `none→꼬리 없음`).
 - **type별 클래스** (비주얼 기본값은 art-director의 style-bible "말풍선 오버레이 규약"을 따른다 — 폰트 `Apple SD Gothic Neo`/`Noto Sans KR`, 흰 배경+검정 테두리+둥근 모서리):
@@ -51,7 +53,7 @@ model: opus
   - `_workspace/04_visual/ep{NN}_validation.md` — panel-validator의 통과/플래그 결과(ACCEPT-FLAG 패널, 각 패널의 말풍선 오버레이 가용 공간 메모 인지).
   - (참조) art-director의 `style-bible.md` "말풍선 오버레이 규약" — 말풍선 비주얼 토큰(폰트/색/테두리/type별 스타일)의 소유처.
 - 출력: `_workspace/06_assembly/ep{NN}/index.html`
-- 형식: 외부 의존성 없는 단일 HTML(인라인 CSS/JS). 패널 이미지는 `../../05_panels/ep{NN}/panel_NNN.png` 상대경로 또는 동일 폴더 복사본으로 참조. 각 패널을 `.panel`로 감싸고, lettering.md의 `bubbles[]`를 `.bubble` 절대배치 div로 주입(`pos{x,y}`/`tail`/`max_width`/`text_ko` 매핑). 말풍선 스타일은 CSS 클래스로 분리.
+- 형식: **외부 의존성 없는 자가완결 단일 HTML**(인라인 CSS/JS). 패널 이미지는 **base64 data URI로 임베드**(상대경로 금지 — 일부 webview에서 깨짐). 각 패널을 `.panel`로 감싸고, lettering.md의 `bubbles[]`를 `.bubble` 절대배치 div로 주입(`pos{x,y}`/`tail`/`max_width`/`text_ko` 매핑). 말풍선 스타일은 CSS 클래스로 분리.
 
 ## 조립 후 렌더 점검 (권장)
 조립한 `index.html`을 headless 또는 브라우저로 열어 실제 렌더를 점검한다. **말풍선이 인물 얼굴·핵심 작화를 가리지 않는지**, 텍스트가 박스를 넘치거나 패널 밖으로 새지 않는지, type별 스타일이 의도대로 보이는지 확인한다. 말풍선이 작화를 가리면 임시로 덮어 넘기지 말고 해당 패널·말풍선을 명시해 **letterer(위치 재지정)** 또는 **panel-validator(여백 부족 = 재렌더)**에 피드백한다.
